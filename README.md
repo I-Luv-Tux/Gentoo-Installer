@@ -2,6 +2,8 @@
 
   This is a lightweight gentoo install script with support for optical and nvme storage devices
 
+  i also made the whole script 1 line with no comments for fun
+
 ## What to Expect  
 A basic openrc install  
 A working swap partition  
