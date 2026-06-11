@@ -175,7 +175,7 @@ esac
 ROOT_OPTS="defaults,noatime"
 
 # make da fstab file
-cat << EOF > /etc/fstab
+cat << FSTAB_EOF > /etc/fstab
 # /etc/fstab: Static file system information.
 # <file system>                             <mount point>   <type>      <options>               <dump>  <pass>
 
@@ -190,7 +190,7 @@ UUID=$(blkid -s UUID -o value "${TARGET_DRIVE}${PARTITION_STYLE}3")        /    
 
 # Optical Device Default Mappings
 /dev/cdrom                                  /mnt/cdrom      auto        noauto,user             0       0
-EOF
+FSTAB_EOF
 
 # todo: make this changable in config
 echo larpmachine > /etc/hostname
