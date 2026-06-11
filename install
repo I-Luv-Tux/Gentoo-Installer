@@ -118,7 +118,7 @@ emerge -1 app-portage/cpuid2cpuflags
 echo "*/* \"$(cpuid2cpuflags)" > /etc/portage/package.use/00cpu-flags
 
 # todo: add something for this in configure
-echo "ACCEPT_LICENSE='"'*'"'"
+echo "ACCEPT_LICENSE='"'*'"'" >> /etc/portage/make.conf
 
 # todo: add other timezones for configure
 ln -sf ../usr/share/zoneinfo/America/New_York /etc/localtime
