@@ -1,0 +1,265 @@
+#!/bin/bash
+
+chmod +x ./install
+
+# Initialize variables
+PARTITION_MODE=0
+FILESYSTEM=""
+SELECTED_DRIVE=""
+STAGE_FILE=""
+KERNEL_CHOICE=""
+BOOTLOADER_CHOICE=""
+INIT_SYSTEM_CHOICE=""
+
+# Create a temporary file to capture dialog outputs
+OUTPUT=$(mktemp)
+
+# Clean up temp file on exit
+trap 'rm -f "$OUTPUT"' EXIT
+
+# Function to dynamically list drives cleanly
+get_drive_options() {
+    for dev in /sys/block/*; do
+        dev_name=$(basename "$dev")
+        # Match standard drives (sdX, nvmeXnX, vdX)
+        if [[ "$dev_name" =~ ^(sd[a-z]|nvme[0-9]n[0-9]|vd[a-z]) ]]; then
+            echo "/dev/$dev_name"
+            echo "Storage_Device"
+        fi
+    done
+}
+
+while true; do
+    # Main Menu
+    dialog --clear --title "Gentoo Installation Setup" \
+        --menu "Select an action:" 16 65 6 \
+        1 "Configure Storage & Partitioning" \
+        2 "Select Stage Tarball Profile" \
+        3 "Select Kernel Profile" \
+        4 "Select Bootloader" \
+        5 "Select Init System" \
+        6 "Install" 2> "$OUTPUT"
+    
+    # Catch Cancel or Escape at Main Menu to exit script
+    if [ $? -ne 0 ]; then
+        break
+    fi
+    
+    MAIN_CHOICE=$(cat "$OUTPUT")
+    
+    if [ "$MAIN_CHOICE" = "1" ]; then
+        # Drive Selection Loop
+        while true; do
+            DRIVE_MENU_ITEMS=($(get_drive_options))
+            
+            if [ ${#DRIVE_MENU_ITEMS[@]} -eq 0 ]; then
+                dialog --title "Error" --msgbox "No usable storage drives found." 8 50
+                break
+            fi
+
+            dialog --clear --title "Target Drive Selection" \
+                --menu "Select the drive you want to configure:" 15 65 6 \
+                "${DRIVE_MENU_ITEMS[@]}" 2> "$OUTPUT"
+            
+            # If user presses Cancel, go back to Main Menu
+            if [ $? -ne 0 ]; then
+                break 
+            fi
+            
+            SELECTED_DRIVE=$(cat "$OUTPUT")
+            CONFIRMED=false
+            
+            # Partition Method Loop
+            while true; do
+                dialog --clear --title "Partition Configuration ($SELECTED_DRIVE)" \
+                    --menu "Choose your partitioning method for $SELECTED_DRIVE:" 15 65 3 \
+                    1 "Use a precreated partition setup" \
+                    2 "Set my own partitions" \
+                    3 "Go Back to Drive Selection" 2> "$OUTPUT"
+                
+                # If user presses Cancel, go back to Drive Selection
+                if [ $? -ne 0 ]; then
+                    break 
+                fi
+                
+                SUB_CHOICE=$(cat "$OUTPUT")
+                
+                if [ "$SUB_CHOICE" = "3" ]; then
+                    break # Go back to Drive Selection
+                fi
+                
+                if [ "$SUB_CHOICE" = "1" ]; then
+                    PARTITION_MODE=1
+                    
+                    dialog --clear --title "Filesystem Selection" \
+                        --menu "Select a filesystem type for $SELECTED_DRIVE:" 15 50 5 \
+                        "ext4"  "Extended 4 Filesystem" \
+                        "xfs"   "XFS Filesystem" \
+                        "btrfs" "Btrfs Filesystem" \
+                        "zfs"   "ZFS Filesystem" \
+                        "Back"  "Go back to partition options" 2> "$OUTPUT"
+                    
+                    if [ $? -ne 0 ]; then
+                        continue # Cancelled FS menu, loop back to Partition Method
+                    fi
+                    
+                    FS_CHOICE=$(cat "$OUTPUT")
+                    
+                    if [ "$FS_CHOICE" = "Back" ]; then
+                        continue # User selected Back, loop back to Partition Method
+                    fi
+                    
+                    # Successfully selected a filesystem
+                    FILESYSTEM="$FS_CHOICE"
+                    CONFIRMED=true
+                    break # Break out of Partition Method loop
+                    
+                elif [ "$SUB_CHOICE" = "2" ]; then
+                    PARTITION_MODE=2
+                    FILESYSTEM="Manual (Handled externally)"
+                    CONFIRMED=true
+                    break # Break out of Partition Method loop
+                fi
+            done
+            
+            # If a complete configuration was made, show the box and return to Main Menu
+            if [ "$CONFIRMED" = true ]; then
+                dialog --title "Selection Saved" --msgbox \
+                    "Configuration updated!\n\nTarget Drive: $SELECTED_DRIVE\nPartition Mode: $PARTITION_MODE\nFilesystem: $FILESYSTEM" 12 60
+                break # Break out of Drive Selection loop
+            fi
+        done
+        
+    elif [ "$MAIN_CHOICE" = "2" ]; then
+        # Stage Selection Loop
+        while true; do
+            dialog --clear --title "Stage 3 Tarball Selection" \
+                --menu "Choose your Gentoo Stage profile:" 18 65 7 \
+                "openrc"               "Standard OpenRC" \
+                "desktop-openrc"       "Desktop Profile with OpenRC" \
+                "llvm-openrc"          "(exp) LLVM Profile" \
+                "musl-hardened-openrc" "(exp) Musl Hardened" \
+                "musl-llvm-openrc"     "(exp) Musl LLVM" \
+                "musl-openrc"          "(exp) Standard Musl" \
+                "Back"                 "Go back to Main Menu" 2> "$OUTPUT"
+            
+            # Catch Cancel or Escape to return to Main Menu
+            if [ $? -ne 0 ]; then
+                break 
+            fi
+            
+            STAGE_CHOICE=$(cat "$OUTPUT")
+            
+            if [ "$STAGE_CHOICE" = "Back" ]; then
+                break # Go back to Main Menu
+            fi
+            
+            # Save the selection and confirm
+            STAGE_FILE="$STAGE_CHOICE"
+            dialog --title "Selection Saved" --msgbox \
+                "Stage profile updated!\n\nSelected Stage: $STAGE_FILE" 8 50
+            break # Break out of Stage Selection loop back to Main Menu
+        done
+
+    elif [ "$MAIN_CHOICE" = "3" ]; then
+        # Kernel Selection Loop
+        while true; do
+            dialog --clear --title "Kernel Selection" \
+                --menu "Choose your Kernel profile:" 15 65 4 \
+                "gentoo-kernel"       "Compile from source (Default)" \
+                "gentoo-kernel-bin"   "Precompiled binary kernel" \
+                "cachyos-kernel-bin"  "Performance optimized binary" \
+                "Back"                "Go back to Main Menu" 2> "$OUTPUT"
+            
+            # Catch Cancel or Escape to return to Main Menu
+            if [ $? -ne 0 ]; then
+                break 
+            fi
+            
+            KERNEL_SUB_CHOICE=$(cat "$OUTPUT")
+            
+            if [ "$KERNEL_SUB_CHOICE" = "Back" ]; then
+                break # Go back to Main Menu
+            fi
+            
+            # Save the selection and confirm
+            KERNEL_CHOICE="$KERNEL_SUB_CHOICE"
+            dialog --title "Selection Saved" --msgbox \
+                "Kernel profile updated!\n\nSelected Kernel: $KERNEL_CHOICE" 8 50
+            break # Break out of Kernel Selection loop back to Main Menu
+        done
+
+    elif [ "$MAIN_CHOICE" = "4" ]; then
+        # Bootloader Selection Loop
+        while true; do
+            dialog --clear --title "Bootloader Selection" \
+                --menu "Choose your Bootloader:" 15 50 3 \
+                "grub"       "GRUB Bootloader" \
+                "efi-stub"   "Direct EFI Stub" \
+                "Back"       "Go back to Main Menu" 2> "$OUTPUT"
+            
+            if [ $? -ne 0 ]; then
+                break 
+            fi
+            
+            BL_SUB_CHOICE=$(cat "$OUTPUT")
+            
+            if [ "$BL_SUB_CHOICE" = "Back" ]; then
+                break 
+            fi
+            
+            BOOTLOADER_CHOICE="$BL_SUB_CHOICE"
+            dialog --title "Selection Saved" --msgbox \
+                "Bootloader updated!\n\nSelected Bootloader: $BOOTLOADER_CHOICE" 8 50
+            break
+        done
+
+    elif [ "$MAIN_CHOICE" = "5" ]; then
+        # Init System Selection Loop
+        while true; do
+            dialog --clear --title "Init System Selection" \
+                --menu "Choose your Init System:" 15 50 4 \
+                "openrc"    "OpenRC (Gentoo Default)" \
+                "dinit"     "Dinit" \
+                "runit"     "Runit" \
+                "Back"      "Go back to Main Menu" 2> "$OUTPUT"
+            
+            if [ $? -ne 0 ]; then
+                break 
+            fi
+            
+            INIT_SUB_CHOICE=$(cat "$OUTPUT")
+            
+            if [ "$INIT_SUB_CHOICE" = "Back" ]; then
+                break 
+            fi
+            
+            INIT_SYSTEM_CHOICE="$INIT_SUB_CHOICE"
+            dialog --title "Selection Saved" --msgbox \
+                "Init System updated!\n\nSelected Init System: $INIT_SYSTEM_CHOICE" 8 50
+            break
+        done
+        
+    elif [ "$MAIN_CHOICE" = "6" ]; then
+        # Exit to TTY
+        break
+    fi
+done
+
+# Clean up terminal state on clean script closure
+clear
+echo "Script exited."
+echo "Final environment state variables:"
+echo "SELECTED_DRIVE: $SELECTED_DRIVE"
+echo "PARTITION_MODE: $PARTITION_MODE"
+echo "FILESYSTEM: $FILESYSTEM"
+echo "STAGE_FILE: $STAGE_FILE"
+echo "KERNEL_CHOICE: $KERNEL_CHOICE"
+echo "BOOTLOADER_CHOICE: $BOOTLOADER_CHOICE"
+echo "INIT_SYSTEM_CHOICE: $INIT_SYSTEM_CHOICE"
+
+
+
+
+
+

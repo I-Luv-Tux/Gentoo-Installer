@@ -1,0 +1,298 @@
+#!/bin/bash
+
+## checking if they forgot to put something in the configure
+if [ "$PARTITION_MODE" = 0 ] || [ -z "$STAGE_FILE" ] || [ -z "$KERNEL_CHOICE" ] || [ -z "$BOOTLOADER_CHOICE" ] || [ -z "$INIT_SYSTEM_CHOICE" ]; then
+	echo "configuration error"
+	exit
+fi
+
+## setup the partitions
+if [[ ! "$PARTITION_MODE" = 1]]; then
+	echo "partition 1 must be boot, partition 2 must be swap and 3 must be root"
+	sleep 5
+	cfdisk "$SELECTED_DRIVE"
+else
+
+## do the partitioning
+parted --script --align optimal "$TARGET_DRIVE" mklabel gpt
+parted --script --align optimal "$TARGET_DRIVE" mkpart primary fat32 1MiB 1025MiB
+parted --script "$TARGET_DRIVE" set 1 boot on
+parted --script "$TARGET_DRIVE" set 1 esp on
+parted --script --align optimal "$TARGET_DRIVE" mkpart primary linux-swap 1025MiB 9217MiB
+parted --script --align optimal "$TARGET_DRIVE" mkpart primary "$FILESYSTEM" 9217MiB 100%
+
+fi
+
+## i acidentally used the wrong variable so fix that
+export TARGET_DRIVE="$SELECTED_DRIVE"
+
+# fix nvme block device partition syntax
+if [[ "$TARGET_DRIVE" == *"nvme"* ]]; then
+	export PARTITION_STYLE="p"
+else
+	export PARTITION_STYLE=""
+fi
+
+mfks.vfat -F 32 "$TARGET_DRIVE""$PARTITION_STYLE"1
+
+## Assign the rootfs type
+case "$FILESYSTEM" in
+	ext4)
+	  mkfs.ext4 "$TARGET_DRIVE""$PARTITION_STYLE"3
+	  ;;
+
+	xfs)
+	  mkfs.xfs "$TARGET_DRIVE""$PARTITION_STYLE"3
+	  ;;
+
+	btrfs)
+	  mkfs.btrfs "$TARGET_DRIVE""$PARTITION_STYLE"3
+	  ;;
+
+	zfs)
+	  zpool create gentoo "$TARGET_DRIVE""$PARTITION_STYLE"3
+	  ;;
+esac
+
+# swap stuff (if you're using a non-gentoo installation media remove swapon)
+mkswap "$TARGET_DRIVE""$PARTITION_STYLE"2
+swapon "$TARGET_DRIVE""$PARTITION_STYLE"2
+
+mkdir -p /mnt/gentoo
+mount "$TARGET_DRIVE""$PARTITION_STYLE"3 /mnt/gentoo
+mkdir -p /mnt/gentoo/efi
+cd /mnt/gentoo
+
+# automatically assign time 
+# todo: add if statement for people who have broken time clocks
+chronyd -q
+
+# todo: add mirror selection in configure
+MIRROR_URL="https://mirrors.mit.edu/gentoo-distfiles/releases/amd64/autobuilds/"
+
+wget -qO- "${MIRROR_URL}latest-stage3-amd64-${STAGE_FILE}.txt" | \
+grep -v -E '^#|^---' | awk '{print $1}' | grep '\.tar\.xz' | \
+xargs -I {} wget "${MIRROR_URL}{}"
+
+tar xpvf stage3-*.tar.xz --xattrs-include='*.*' --numeric-owner -C /mnt/gentoo
+
+# not super bad if this doesnt work but it makes gentoo kinda useless
+sed -i 's/COMMON_FLAGS="/COMMON_FLAGS="-march=native /' /mnt/gentoo/etc/portage/make.conf
+
+# holy syntax
+echo "MAKEOPTS="'"'""-j"$(nproc)" -l"$(( $(nproc) + 1))"'"'"""" >> /mnt/gentoo/etc/portage/make.conf
+
+cp --dereference /etc/resolv.conf /mnt/gentoo/etc/
+
+mount --types proc /proc /mnt/gentoo/proc
+mount --rbind /sys /mnt/gentoo/sys
+mount --make-rslave /mnt/gentoo/sys
+mount --rbind /dev /mnt/gentoo/dev
+mount --make-rslave /mnt/gentoo/dev
+mount --bind /run /mnt/gentoo/run
+mount --make-slave /mnt/gentoo/run
+
+## very important and probably where im going to be spending most of my time
+# number of times i had to fix it: 0
+env TARGET_DRIVE="$TARGET_DRIVE" PARTITION_STYLE="$PARTITION_STYLE" STAGE_FILE="$STAGE_FILE" chroot /mnt/gentoo /bin/bash -c "
+
+source /etc/profile
+mount "$TARGET_DRIVE""PARTITION_STYLE"1 /efi
+emerge-webrsync
+
+if [[ "$STAGE_FILE" == "desktop-openrc" ]]; then
+    TARGET_PROFILE="default/linux/amd64/23.0/desktop"
+elif [[ "$STAGE_FILE" == "openrc" ]]; then
+    TARGET_PROFILE="default/linux/amd64/23.0"
+elif [[ "$STAGE_FILE" == "llvm-openrc" ]]; then
+    TARGET_PROFILE="default/linux/amd64/23.0/llvm"
+elif [[ "$STAGE_FILE" == "musl-openrc" ]]; then
+    TARGET_PROFILE="default/linux/amd64/23.0/musl"
+elif [[ "$STAGE_FILE" == "musl-llvm-openrc" ]]; then
+    TARGET_PROFILE="default/linux/amd64/23.0/musl/llvm"
+elif [[ "$STAGE_FILE" == "musl-hardened-openrc" ]]; then
+    TARGET_PROFILE="default/linux/amd64/23.0/musl/hardened"
+fi
+
+eselect profile set "$TARGET_PROFILE"
+emerge -1 app-portage/cpuid2cpuflags
+echo "*/* \$(cpuid2cpuflags)" > /etc/portage/package.use/00cpu-flags
+
+# todo: add something for this in configure
+echo "ACCEPT_LICENSE='"'*'"'"
+
+# todo: add other timezones for configure
+ln -sf ../usr/share/zoneinfo/America/New_York /etc/localtime
+echo "en_US.UTF-8 UTF-8" > /etc/locale.gen
+locale-gen
+
+# this is bound to cause issues
+eselect locale set 4
+
+env-update && source /etc/profile
+emerge sys-kernel/linux-firmware
+
+# ahh case how i love you so much
+# todo: fix efi-stub (i am predicting its going to be the hardest to debug in the script)
+case "$BOOTLOADER_CHOICE"
+	grub)
+	  echo "sys-kernel/installkernel grub dracut" > /etc/portage/package.use/installkernel
+	  ;;
+
+        efi-stub)
+	  mkdir -p /efi/EFI/Gentoo
+	  echo "sys-kernel/installkernel efistub dracut" > /etc/portage/package.use/installkernel
+	  echo -e "sys-kernel/installkernel\nsys-boot/uefi-mkconfig\napp-emulation/virt-firmware" >> /etc/portage/package.accept_keywords/installkernel
+	  ;;
+esac 
+
+mkdir /etc/dracut.conf.d
+echo "kernel_cmdline=\" root=UUID=$(blkid -s UUID -o value "$TARGET_DRIVE""$PARTITION_STYLE"3) \"" > /etc/dracut.conf.d/00-installkernel.conf
+
+emerge --ask sys-kernel/installkernel
+
+# why did i add a cachyos option :sob:
+case "$KERNEL_CHOICE" in
+	gentoo-kernel)
+		emerge sys-kernel/gentoo-kernel
+		;;
+	
+	gentoo-kernel-bin)
+		emerge sys-kernel/gentoo-kernel-bin
+		;;
+
+	cachyos-kernel-bin)
+		emerge app-eselect/eselect-repository
+		eselect repository add cachyos git https://github.com/CachyOS/gentoo-cachyos.git
+		emaint sync -r cachyos
+		mkdir -p /etc/portage/package.accept_keywords
+		echo "sys-kernel/cachyos-kernel-bin ~amd64" >> /etc/portage/package.accept_keywords/cachyos
+		echo "sys-kernel/cachyos-sources ~amd64" >> /etc/portage/package.accept_keywords/cachyos
+		emerge sys-kernel/cachyos-kernel-bin
+		;;
+esac
+
+# something i left from an earlier idea
+ROOT_OPTS="defaults,noatime"
+
+# make da fstab file
+cat << EOF > /etc/fstab
+# /etc/fstab: Static file system information.
+# <file system>                             <mount point>   <type>      <options>               <dump>  <pass>
+
+# EFI Boot Partition
+UUID=$(blkid -s UUID -o value "${SELECTED_DRIVE}${PARTITION_STYLE}1")        /efi            vfat        umask=0077,tz=UTC       0       2
+
+# Swap Space
+UUID=$(blkid -s UUID -o value "${SELECTED_DRIVE}${PARTITION_STYLE}2")        none            swap        sw                      0       0
+
+# Root Storage File System
+UUID=$(blkid -s UUID -o value "${SELECTED_DRIVE}${PARTITION_STYLE}3")        /               $FILESYSTEM    $ROOT_OPTS      0       1
+
+# Optical Device Default Mappings
+/dev/cdrom                                  /mnt/cdrom      auto        noauto,user             0       0
+EOF
+
+# todo: make this changable in config
+echo larpmachine > /etc/hostname
+
+# todo: make networking daemon changable in config
+echo 'USE="networkmanager"' >> /etc/portage/make.conf
+
+if [ ! "$STAGE_FILE" == *"desktop"* ]; then
+	echo "net-wireless/wpa_supplicant dbus" > /etc/portage/package.use/networkmanager
+else
+	dbus-uuidgen --ensure=/etc/machine-id
+fi
+
+emerge net-misc/networkmanager
+echo "set the root password"
+read rootpassword
+passwd "$rootpassword"
+
+# todo: logger, cron, indexing, completion, and ssh customization
+
+emerge sys-process/cronie
+emerge app-admin/sysklogd
+emerge app-shells/bash-completion
+emerge net-misc/chrony
+
+if [ "$TARGET_DRIVE" == *"nvme"* ]
+	emerge sys-block/io-scheduler-udev-rules
+fi
+
+
+if [ "$BOOTLOADER_CHOICE" == "grub" ]
+	echo 'GRUB_PLATFORMS="efi-64"' >> /etc/portage/make.conf
+	emerge sys-boot/grub
+	grub-install --efi-directory=/efi
+	grub-mkconfig -o /boot/grub/grub.cfg
+else
+	emerge sys-kernel/installkernel
+	mkdir -p /efi/EFI/Gentoo
+	case "$KERNEL_CHOICE" in
+		gentoo-kernel|gentoo-kernel-bin)
+			emerge --config sys-kernel/gentoo-kernel{,-bin}
+			;;
+
+		cachyos-kernel-bin)
+			emerge --ask --config sys-kernel/cachyos-kernel-bin
+			;;
+	esac
+	emerge sys-boot/efibootmgr
+	efibootmgr --create --disk "$TARGET_DRIVE" --part 1 --label "gentoo" --loader "\EFI\Gentoo\bzImage.efi"
+	efibootmgr --create --disk "$TARGET_DRIVE" --part 1 --label "gentoo" --loader "\EFI\Gentoo\bzImage.efi" --unicode "initrd=\EFI\Gentoo\initramfs.img"
+fi
+
+# support for init system changing
+
+SERVICES=("dbus" "NetworkManager" "elogind" "chronyd")
+
+case "$INIT_SYSTEM_CHOICE" in
+    openrc)
+        # OpenRC supports offline addition natively via rc-update
+        for service in "${SERVICES[@]}"; do
+            rc-update add "$service" default
+        done
+        ;;
+        
+    dinit)
+        # Dinit offline activation requires symlinking to the boot.d directory
+        mkdir -p /etc/dinit.d/boot.d
+        
+        for service in "${SERVICES[@]}"; do
+            if [ -f "/etc/dinit.d/$service" ]; then
+                ln -sf "/etc/dinit.d/$service" "/etc/dinit.d/boot.d/"
+                echo "Enabled Dinit service: $service"
+            else
+                echo "Warning: Dinit service file /etc/dinit.d/$service not found."
+            fi
+        done
+        ;;
+        
+    runit)
+        # Runit offline activation requires symlinking to the default runsvdir
+        mkdir -p /etc/runit/runsvdir/default
+        
+        for service in "${SERVICES[@]}"; do
+            if [ -d "/etc/sv/$service" ]; then
+                ln -sf "/etc/sv/$service" "/etc/runit/runsvdir/default/"
+                echo "Enabled Runit service: $service"
+            else
+                echo "Warning: Runit service directory /etc/sv/$service not found."
+            fi
+        done
+        ;;
+        
+esac
+
+"
+
+# very scary thing about to be done
+
+cd
+umount -l /mnt/gentoo/dev{/shm,/pts,}
+umount -R /mnt/gentoo
+
+echo "installation done, reboot when you're ready"
+
