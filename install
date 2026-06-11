@@ -79,7 +79,7 @@ tar xpvf stage3-*.tar.xz --xattrs-include='*.*' --numeric-owner -C /mnt/gentoo
 sed -i 's/COMMON_FLAGS="/COMMON_FLAGS="-march=native /' /mnt/gentoo/etc/portage/make.conf
 
 # holy syntax
-echo "MAKEOPTS="'"'""-j"$(nproc)" -l"$(( $(nproc) + 1))"'"'"""" >> /mnt/gentoo/etc/portage/make.conf
+echo "MAKEOPTS=\"-j$(nproc) -l$(( $(nproc) + 1 ))\"" >> /mnt/gentoo/etc/portage/make.conf
 
 cp --dereference /etc/resolv.conf /mnt/gentoo/etc/
 
@@ -92,11 +92,11 @@ mount --bind /run /mnt/gentoo/run
 mount --make-slave /mnt/gentoo/run
 
 ## very important and probably where im going to be spending most of my time
-# number of times i had to fix it: 0
-env TARGET_DRIVE="$TARGET_DRIVE" PARTITION_STYLE="$PARTITION_STYLE" STAGE_FILE="$STAGE_FILE" chroot /mnt/gentoo /bin/bash -c "
+# number of times i had to fix it: 3
+env TARGET_DRIVE="$TARGET_DRIVE" PARTITION_STYLE="$PARTITION_STYLE" STAGE_FILE="$STAGE_FILE" BOOTLOADER_CHOICE="$BOOTLOADER_CHOICE" KERNEL_CHOICE="$KERNEL_CHOICE" INIT_SYSTEM_CHOICE="$INIT_SYSTEM_CHOICE" FILESYSTEM="$FILESYSTEM" chroot /mnt/gentoo /bin/bash --login << 'EOF'
 
 source /etc/profile
-mount "$TARGET_DRIVE""PARTITION_STYLE"1 /efi
+mount "${TARGET_DRIVE}${PARTITION_STYLE}1" /efi
 emerge-webrsync
 
 if [[ "$STAGE_FILE" == "desktop-openrc" ]]; then
@@ -115,10 +115,10 @@ fi
 
 eselect profile set "$TARGET_PROFILE"
 emerge -1 app-portage/cpuid2cpuflags
-echo "*/* \"$(cpuid2cpuflags)" > /etc/portage/package.use/00cpu-flags
+echo "*/* $(cpuid2cpuflags)" > /etc/portage/package.use/00cpu-flags
 
 # todo: add something for this in configure
-echo "ACCEPT_LICENSE='"'*'"'" >> /etc/portage/make.conf
+echo 'ACCEPT_LICENSE="*"' >> /etc/portage/make.conf
 
 # todo: add other timezones for configure
 ln -sf ../usr/share/zoneinfo/America/New_York /etc/localtime
@@ -133,7 +133,7 @@ emerge sys-kernel/linux-firmware
 
 # ahh case how i love you so much
 # todo: fix efi-stub (i am predicting its going to be the hardest to debug in the script)
-case "$BOOTLOADER_CHOICE"
+case "$BOOTLOADER_CHOICE" in
 	grub)
 	  echo "sys-kernel/installkernel grub dracut" > /etc/portage/package.use/installkernel
 	  ;;
@@ -148,7 +148,7 @@ esac
 mkdir /etc/dracut.conf.d
 echo "kernel_cmdline=\" root=UUID=$(blkid -s UUID -o value "$TARGET_DRIVE""$PARTITION_STYLE"3) \"" > /etc/dracut.conf.d/00-installkernel.conf
 
-emerge --ask sys-kernel/installkernel
+emerge sys-kernel/installkernel
 
 # why did i add a cachyos option :sob:
 case "$KERNEL_CHOICE" in
@@ -180,13 +180,13 @@ cat << EOF > /etc/fstab
 # <file system>                             <mount point>   <type>      <options>               <dump>  <pass>
 
 # EFI Boot Partition
-UUID=$(blkid -s UUID -o value "${SELECTED_DRIVE}${PARTITION_STYLE}1")        /efi            vfat        umask=0077,tz=UTC       0       2
+UUID=$(blkid -s UUID -o value "${TARGET_DRIVE}${PARTITION_STYLE}1")        /efi            vfat        umask=0077,tz=UTC       0       2
 
 # Swap Space
-UUID=$(blkid -s UUID -o value "${SELECTED_DRIVE}${PARTITION_STYLE}2")        none            swap        sw                      0       0
+UUID=$(blkid -s UUID -o value "${TARGET_DRIVE}${PARTITION_STYLE}2")        none            swap        sw                      0       0
 
 # Root Storage File System
-UUID=$(blkid -s UUID -o value "${SELECTED_DRIVE}${PARTITION_STYLE}3")        /               $FILESYSTEM    $ROOT_OPTS      0       1
+UUID=$(blkid -s UUID -o value "${TARGET_DRIVE}${PARTITION_STYLE}3")        /               $FILESYSTEM    $ROOT_OPTS      0       1
 
 # Optical Device Default Mappings
 /dev/cdrom                                  /mnt/cdrom      auto        noauto,user             0       0
@@ -216,12 +216,12 @@ emerge app-admin/sysklogd
 emerge app-shells/bash-completion
 emerge net-misc/chrony
 
-if [ "$TARGET_DRIVE" == *"nvme"* ]
+if [[ "$TARGET_DRIVE" == *"nvme"* ]]; then
 	emerge sys-block/io-scheduler-udev-rules
 fi
 
 
-if [ "$BOOTLOADER_CHOICE" == "grub" ]
+if [[ "$BOOTLOADER_CHOICE" == "grub" ]]; then
 	echo 'GRUB_PLATFORMS="efi-64"' >> /etc/portage/make.conf
 	emerge sys-boot/grub
 	grub-install --efi-directory=/efi
@@ -285,7 +285,7 @@ case "$INIT_SYSTEM_CHOICE" in
         
 esac
 
-"
+EOF
 
 # very scary thing about to be done
 
