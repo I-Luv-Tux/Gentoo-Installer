@@ -6,6 +6,8 @@ if [ "$PARTITION_MODE" = 0 ] || [ -z "$STAGE_FILE" ] || [ -z "$KERNEL_CHOICE" ] 
 	exit
 fi
 
+export TARGET_DRIVE="$SELECTED_DRIVE"
+
 ## setup the partitions
 if [[ ! "$PARTITION_MODE" = 1 ]]; then
 	echo "partition 1 must be boot, partition 2 must be swap and 3 must be root"
@@ -23,9 +25,6 @@ parted --script --align optimal "$TARGET_DRIVE" mkpart primary "$FILESYSTEM" 921
 
 fi
 
-## i acidentally used the wrong variable so fix that
-export TARGET_DRIVE="$SELECTED_DRIVE"
-
 # fix nvme block device partition syntax
 if [[ "$TARGET_DRIVE" == *"nvme"* ]]; then
 	export PARTITION_STYLE="p"
@@ -33,7 +32,7 @@ else
 	export PARTITION_STYLE=""
 fi
 
-mfks.vfat -F 32 "$TARGET_DRIVE""$PARTITION_STYLE"1
+mkfs.vfat -F 32 "$TARGET_DRIVE""$PARTITION_STYLE"1
 
 ## Assign the rootfs type
 case "$FILESYSTEM" in
