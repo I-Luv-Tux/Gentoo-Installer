@@ -205,9 +205,7 @@ else
 fi
 
 emerge net-misc/networkmanager
-echo "set the root password"
-read rootpassword
-passwd "$rootpassword"
+echo "root:123" | chpasswd
 
 # todo: logger, cron, indexing, completion, and ssh customization
 
